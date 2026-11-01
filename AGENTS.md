@@ -1,0 +1,28 @@
+# AGENTS.md
+
+## Layout
+
+- `Sources/ZyxKit/Dopamine.swift`: reads and sets `pmset disablesleep`, and installs the sudoers rule.
+- `Sources/Zyx/main.swift`: the menu bar item, a native NSMenu with one row per tool.
+- `Resources/`: `Info.plist`, `Logo.svg` (source of `AppIcon.icns`), `MenuIcon.pdf` (from zyx1121/cappuccino).
+
+## Rules
+
+- Read the system setting every time the menu opens. Never cache tool state in the app.
+- The sudoers rule allows exactly `/usr/bin/pmset -a disablesleep 0` and `1`. Never widen it.
+- Check every sudoers file with `visudo -cf` before it lands in `/etc/sudoers.d`.
+- Build, test and run on the MacBook. Keep `.build` a symlink outside iCloud: its extended attributes break code signing.
+- A new tool is one more row in the menu. Keep its logic in `ZyxKit` with tests.
+
+## Verify
+
+```sh
+swift test
+scripts/dev-run.sh
+```
+
+Open the menu, switch Dopamine, then check `pmset -g | grep SleepDisabled`.
+
+## Commits
+
+Conventional Commits.
