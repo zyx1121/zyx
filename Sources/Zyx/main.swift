@@ -2,12 +2,28 @@ import AppKit
 import SwiftUI
 import ZyxKit
 
-/// The zyx toolkit in the menu bar: a native NSMenu, one row per tool.
+/// Sizes measured from the system Sound menu (macOS 27), in points.
+enum Metrics {
+    static let width: CGFloat = 260
+    static let corner: CGFloat = 16
+    /// Rows and separators that span the menu sit this far inside its edge.
+    static let edge: CGFloat = 5
+    static let inset: CGFloat = 14
+    static let row: CGFloat = 32
+    static let icon: CGFloat = 26
+    /// Gap from the menu bar to the top of the menu.
+    static let drop: CGFloat = 6
+}
+
+/// The zyx toolkit in the menu bar: one panel, one row per tool. A panel,
+/// not an NSMenu, so it matches the system Sound and Wi-Fi menus: the round
+/// corners, the gray hover and the blue switch.
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate {
     private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-    private let menu = NSMenu()
     private let dopamine = DopamineModel()
+    private lazy var panel = MenuPanel(content: MenuView(dopamine: dopamine, quit: { NSApp.terminate(nil) }))
+    private var monitors: [Any] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let icon = Bundle.main.image(forResource: "MenuIcon")
@@ -17,29 +33,94 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             icon.isTemplate = true
         }
         item.button?.image = icon ?? NSImage(systemSymbolName: "circle.hexagongrid", accessibilityDescription: "zyx")
-        item.button?.toolTip = "zyx"
-
-        menu.delegate = self
-        menu.autoenablesItems = false
-        let row = NSMenuItem()
-        let view = NSHostingView(rootView: DopamineRow(model: dopamine))
-        view.frame.size = NSSize(width: 260, height: view.fittingSize.height)
-        view.autoresizingMask = [.width]
-        row.view = view
-        menu.addItem(row)
-        menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "Quit zyx", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
-        item.menu = menu
-        dopamine.refresh()
+        item.button?.setAccessibilityLabel("zyx")
+        item.button?.target = self
+        item.button?.action = #selector(toggle)
+        item.button?.sendAction(on: [.leftMouseDown, .rightMouseDown])
 
         if ProcessInfo.processInfo.environment["ZYX_OPEN_MENU"] == "1" {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.item.button?.performClick(nil) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.open() }
         }
     }
 
-    func menuWillOpen(_ menu: NSMenu) {
-        dopamine.refresh()
+    @objc private func toggle() {
+        panel.isVisible ? close() : open()
     }
+
+    private func open() {
+        guard let button = item.button, let bar = button.window else { return }
+        dopamine.refresh()
+        let anchor = bar.convertToScreen(button.convert(button.bounds, to: nil))
+        let size = panel.fit()
+        let screen = bar.screen?.visibleFrame ?? .infinite
+        let x = min(anchor.minX, screen.maxX - size.width - Metrics.edge)
+        panel.setFrameTopLeftPoint(NSPoint(x: x, y: anchor.minY - Metrics.drop))
+        panel.makeKeyAndOrderFront(nil)
+        button.highlight(true)
+
+        let outside = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            MainActor.assumeIsolated { self?.close() }
+        }
+        let escape = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard event.keyCode == 53 else { return event }
+            self?.close()
+            return nil
+        }
+        monitors = [outside, escape].compactMap { $0 }
+    }
+
+    private func close() {
+        panel.orderOut(nil)
+        item.button?.highlight(false)
+        monitors.forEach(NSEvent.removeMonitor)
+        monitors = []
+    }
+}
+
+/// A borderless panel that takes key focus without activating the app, so
+/// the switch draws in the accent color and hover works.
+final class MenuPanel: NSPanel {
+    private let host: NSHostingView<AnyView>
+
+    init(content: some View) {
+        host = NSHostingView(rootView: AnyView(content))
+        super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        level = .popUpMenu
+        isOpaque = false
+        backgroundColor = .clear
+        hasShadow = true
+        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+
+        // The native menu is opaque: #202020 in dark mode, sampled from NSMenu.
+        let background = NSView()
+        background.wantsLayer = true
+        background.layer?.backgroundColor = Self.fill.cgColor
+        background.layer?.cornerRadius = Metrics.corner
+        background.layer?.cornerCurve = .continuous
+        background.layer?.masksToBounds = true
+        background.layer?.borderWidth = 0.5
+        background.layer?.borderColor = NSColor.separatorColor.cgColor
+        host.autoresizingMask = [.width, .height]
+        background.addSubview(host)
+        contentView = background
+    }
+
+    override var canBecomeKey: Bool { true }
+
+    private static let fill = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(white: 0x20 / 255.0, alpha: 1)
+            : NSColor(white: 0xF2 / 255.0, alpha: 1)
+    }
+
+    /// Resizes the panel to its content and returns the size.
+    func fit() -> NSSize {
+        let size = NSSize(width: Metrics.width, height: host.fittingSize.height)
+        setContentSize(size)
+        host.frame = NSRect(origin: .zero, size: size)
+        return size
+    }
+
 }
 
 @MainActor
@@ -68,33 +149,79 @@ final class DopamineModel {
     }
 }
 
-/// One row like the system Wi-Fi menu: icon circle, title, switch.
+struct MenuView: View {
+    let dopamine: DopamineModel
+    let quit: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            DopamineRow(model: dopamine)
+            Divider()
+                .padding(.horizontal, Metrics.inset)
+                .padding(.vertical, 5)
+            ActionRow(title: "Quit zyx", height: 22, action: quit) {
+                Text("Quit zyx").font(.system(size: 13))
+            }
+        }
+        .padding(.vertical, Metrics.edge)
+        .frame(width: Metrics.width)
+    }
+}
+
+/// The whole row is the switch, like Low Power in the system Battery menu:
+/// the icon circle turns blue when Dopamine is on.
 struct DopamineRow: View {
     let model: DopamineModel
 
     var body: some View {
         let on = model.on == true
-        HStack(spacing: 8) {
-            Image(systemName: "bolt.fill")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(on ? .white : .primary)
-                .frame(width: 26, height: 26)
-                .background(on ? AnyShapeStyle(.tint) : AnyShapeStyle(.fill.secondary), in: .circle)
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Dopamine").font(.system(size: 13))
-                if let error = model.error {
-                    Text(error).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+        ActionRow(title: "Dopamine", height: model.error == nil ? Metrics.row : 40, action: {
+            if let current = model.on, !model.busy { model.set(!current) }
+        }) {
+            HStack(spacing: 8) {
+                Image(systemName: "bolt.fill")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(on ? .white : .primary)
+                    .frame(width: Metrics.icon, height: Metrics.icon)
+                    .background(on ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.fill.secondary), in: .circle)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Dopamine").font(.system(size: 13))
+                    if let error = model.error {
+                        Text(error).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                    }
                 }
             }
-            Spacer(minLength: 0)
-            Toggle("Dopamine", isOn: Binding(get: { on }, set: { model.set($0) }))
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .controlSize(.small)
-                .disabled(model.busy || model.on == nil)
         }
-        .padding(.horizontal, 13)
-        .frame(minWidth: 260, maxWidth: .infinity, minHeight: model.error == nil ? 32 : 40)
+        .accessibilityAddTraits(.isToggle)
+        .accessibilityValue(on ? "on" : "off")
+    }
+}
+
+/// A row with the system gray hover: it spans the menu less 5 pt each side,
+/// with corners concentric to the menu's.
+struct ActionRow<Content: View>: View {
+    let title: String
+    let height: CGFloat
+    let action: () -> Void
+    @ViewBuilder var content: Content
+    @State private var hover = false
+
+    var body: some View {
+        Button(action: action) {
+            content
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, Metrics.inset - Metrics.edge)
+                .frame(height: height)
+                .background(
+                    hover ? AnyShapeStyle(.fill.secondary) : AnyShapeStyle(.clear),
+                    in: .rect(cornerRadius: Metrics.corner - Metrics.edge, style: .continuous)
+                )
+                .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+        .onHover { hover = $0 }
+        .padding(.horizontal, Metrics.edge)
     }
 }
 

@@ -3,7 +3,7 @@
 ## Layout
 
 - `Sources/ZyxKit/Dopamine.swift`: reads and sets `pmset disablesleep`, and installs the sudoers rule.
-- `Sources/Zyx/main.swift`: the menu bar item, a native NSMenu with one row per tool.
+- `Sources/Zyx/main.swift`: the menu bar item and its panel, one row per tool. The panel copies the system Battery and Sound menus: 16 pt corners, #202020 fill, gray hover, and a whole row as the switch.
 - `Resources/`: `Info.plist`, `Logo.svg` (source of `AppIcon.icns`), `MenuIcon.pdf` (from zyx1121/cappuccino).
 
 ## Rules
