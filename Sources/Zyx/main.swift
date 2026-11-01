@@ -1,4 +1,5 @@
 import AppKit
+import ServiceManagement
 import SwiftUI
 import ZyxKit
 
@@ -26,6 +27,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var monitors: [Any] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Open at login, once: turning it off in System Settings sticks.
+        let offered = "launchAtLoginOffered"
+        if !UserDefaults.standard.bool(forKey: offered), Bundle.main.bundleURL.pathExtension == "app" {
+            try? SMAppService.mainApp.register()
+            UserDefaults.standard.set(true, forKey: offered)
+        }
         let icon = Bundle.main.image(forResource: "MenuIcon")
         if let icon {
             // The PDF comes at its page size; the menu bar wants 18 pt high.

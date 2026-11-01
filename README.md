@@ -15,6 +15,7 @@ zyx puts small tools in one menu bar item. Each tool is one row in the menu.
 
 ## Features
 
+- **Open at login**: zyx adds itself to Login Items on first launch. Remove it in System Settings, General, Login Items.
 - **Dopamine**: keeps the Mac awake with the lid closed. The switch runs `pmset -a disablesleep 1` and shows the current system setting.
 
 ## Quick start
