@@ -4,7 +4,7 @@ import ZyxKit
 
 /// Sizes measured from the system Sound menu (macOS 27), in points.
 enum Metrics {
-    static let width: CGFloat = 260
+    static let width: CGFloat = 308
     static let corner: CGFloat = 16
     /// Rows and separators that span the menu sit this far inside its edge.
     static let edge: CGFloat = 5
@@ -53,7 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let anchor = bar.convertToScreen(button.convert(button.bounds, to: nil))
         let size = panel.fit()
         let screen = bar.screen?.visibleFrame ?? .infinite
-        let x = min(anchor.minX, screen.maxX - size.width - Metrics.edge)
+        let x = max(screen.minX + Metrics.edge, anchor.maxX - size.width)
         panel.setFrameTopLeftPoint(NSPoint(x: x, y: anchor.minY - Metrics.drop))
         panel.makeKeyAndOrderFront(nil)
         button.highlight(true)
@@ -91,10 +91,12 @@ final class MenuPanel: NSPanel {
         hasShadow = true
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
-        // The native menu is opaque: #202020 in dark mode, sampled from NSMenu.
-        let background = NSView()
+        // The system menu material: translucent, it tints what is behind.
+        let background = NSVisualEffectView()
+        background.material = .menu
+        background.state = .active
+        background.blendingMode = .behindWindow
         background.wantsLayer = true
-        background.layer?.backgroundColor = Self.fill.cgColor
         background.layer?.cornerRadius = Metrics.corner
         background.layer?.cornerCurve = .continuous
         background.layer?.masksToBounds = true
@@ -106,12 +108,6 @@ final class MenuPanel: NSPanel {
     }
 
     override var canBecomeKey: Bool { true }
-
-    private static let fill = NSColor(name: nil) { appearance in
-        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            ? NSColor(white: 0x20 / 255.0, alpha: 1)
-            : NSColor(white: 0xF2 / 255.0, alpha: 1)
-    }
 
     /// Resizes the panel to its content and returns the size.
     func fit() -> NSSize {
