@@ -11,7 +11,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let icon = Bundle.main.image(forResource: "MenuIcon")
-        icon?.isTemplate = true
+        if let icon {
+            // The PDF comes at its page size; the menu bar wants 18 pt high.
+            icon.size = NSSize(width: 18 * icon.size.width / max(icon.size.height, 1), height: 18)
+            icon.isTemplate = true
+        }
         item.button?.image = icon ?? NSImage(systemSymbolName: "circle.hexagongrid", accessibilityDescription: "zyx")
         item.button?.toolTip = "zyx"
 
