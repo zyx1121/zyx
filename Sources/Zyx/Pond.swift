@@ -10,12 +10,12 @@ final class PondModel {
     private static let key = "pond"
     private static let url = URL(string: "https://www.zyx.tw/")!
 
-    /// Only the pond: the page's header, mark and footer hide, and the TV
-    /// frame comes off.
+    /// Only the pond, on pure black so the notch disappears into it: the
+    /// page's header, mark and footer hide, and the TV frame comes off.
     private static let script = """
     (() => {
       const style = document.createElement("style");
-      style.textContent = "body > :not(canvas) { visibility: hidden !important; }";
+      style.textContent = "html { background: #000 !important; } body { background: transparent !important; } body > :not(canvas) { visibility: hidden !important; }";
       document.documentElement.append(style);
       // remove() rewrites the attribute even when "tv" is gone, which would
       // wake the observer again, forever.
