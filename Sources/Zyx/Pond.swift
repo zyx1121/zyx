@@ -8,7 +8,9 @@ import WebKit
 @Observable
 final class PondModel {
     private static let key = "pond"
-    private static let url = URL(string: "https://www.zyx.tw/")!
+    /// A page with the pond but not the home's mark, which the koi would
+    /// swim around even while hidden.
+    private static let url = URL(string: "https://www.zyx.tw/privacy")!
 
     /// Only the pond, on pure black so the notch disappears into it: the
     /// page's header, mark and footer hide, and the TV frame comes off.
