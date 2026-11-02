@@ -23,7 +23,8 @@ enum Metrics {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let dopamine = DopamineModel()
-    private lazy var panel = MenuPanel(content: MenuView(dopamine: dopamine, quit: { NSApp.terminate(nil) }))
+    private let pond = PondModel()
+    private lazy var panel = MenuPanel(content: MenuView(dopamine: dopamine, pond: pond, quit: { NSApp.terminate(nil) }))
     private var monitors: [Any] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -163,11 +164,17 @@ final class DopamineModel {
 
 struct MenuView: View {
     let dopamine: DopamineModel
+    let pond: PondModel
     let quit: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
-            DopamineRow(model: dopamine)
+            ToggleRow(title: "Dopamine", symbol: "bolt.fill", on: dopamine.on == true, error: dopamine.error) {
+                if let current = dopamine.on, !dopamine.busy { dopamine.set(!current) }
+            }
+            ToggleRow(title: "Pond", symbol: "fish.fill", on: pond.on, error: nil) {
+                pond.set(!pond.on)
+            }
             Divider()
                 .padding(.horizontal, Metrics.inset)
                 .padding(.vertical, 5)
@@ -181,24 +188,25 @@ struct MenuView: View {
 }
 
 /// The whole row is the switch, like Low Power in the system Battery menu:
-/// the icon circle turns blue when Dopamine is on.
-struct DopamineRow: View {
-    let model: DopamineModel
+/// the icon circle turns blue when the tool is on.
+struct ToggleRow: View {
+    let title: String
+    let symbol: String
+    let on: Bool
+    let error: String?
+    let action: () -> Void
 
     var body: some View {
-        let on = model.on == true
-        ActionRow(title: "Dopamine", height: model.error == nil ? Metrics.row : 40, action: {
-            if let current = model.on, !model.busy { model.set(!current) }
-        }) {
+        ActionRow(title: title, height: error == nil ? Metrics.row : 40, action: action) {
             HStack(spacing: 8) {
-                Image(systemName: "bolt.fill")
+                Image(systemName: symbol)
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(on ? .white : .primary)
                     .frame(width: Metrics.icon, height: Metrics.icon)
                     .background(on ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.fill.secondary), in: .circle)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("Dopamine").font(.system(size: 13))
-                    if let error = model.error {
+                    Text(title).font(.system(size: 13))
+                    if let error {
                         Text(error).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
                     }
                 }
