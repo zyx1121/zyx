@@ -98,20 +98,29 @@ final class MenuPanel: NSPanel {
         hasShadow = true
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
-        // The system menu material: translucent, it tints what is behind.
-        let background = NSVisualEffectView()
-        background.material = .menu
-        background.state = .active
-        background.blendingMode = .behindWindow
-        background.wantsLayer = true
-        background.layer?.cornerRadius = Metrics.corner
-        background.layer?.cornerCurve = .continuous
-        background.layer?.masksToBounds = true
-        background.layer?.borderWidth = 0.5
-        background.layer?.borderColor = NSColor.separatorColor.cgColor
         host.autoresizingMask = [.width, .height]
-        background.addSubview(host)
-        contentView = background
+        if #available(macOS 26.0, *) {
+            // Liquid Glass, as the system Wi-Fi and Sound menus draw since macOS 26.
+            let glass = NSGlassEffectView()
+            glass.style = .regular
+            glass.cornerRadius = Metrics.corner
+            glass.contentView = host
+            contentView = glass
+        } else {
+            // Before Liquid Glass: the menu material, which tints what is behind.
+            let background = NSVisualEffectView()
+            background.material = .menu
+            background.state = .active
+            background.blendingMode = .behindWindow
+            background.wantsLayer = true
+            background.layer?.cornerRadius = Metrics.corner
+            background.layer?.cornerCurve = .continuous
+            background.layer?.masksToBounds = true
+            background.layer?.borderWidth = 0.5
+            background.layer?.borderColor = NSColor.separatorColor.cgColor
+            background.addSubview(host)
+            contentView = background
+        }
     }
 
     override var canBecomeKey: Bool { true }
