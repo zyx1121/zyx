@@ -5,7 +5,7 @@ import ZyxKit
 
 /// Sizes measured from the system Sound menu (macOS 27), in points.
 enum Metrics {
-    static let width: CGFloat = 308
+    static let width: CGFloat = 220
     static let corner: CGFloat = 16
     /// Rows and separators that span the menu sit this far inside its edge.
     static let edge: CGFloat = 5
