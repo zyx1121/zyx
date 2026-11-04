@@ -33,6 +33,11 @@ final class PondModel {
     private var cursor: Timer?
     private var last = NSPoint(x: -1, y: -1)
     private var screens: NSObjectProtocol?
+    /// The screens the windows were built for. macOS posts a screen change
+    /// for brightness and HDR headroom too, dozens at a time; rebuilding on
+    /// each one reloaded the page and flashed it white, then black.
+    private var layout: [NSRect] = []
+    private var pending: DispatchWorkItem?
 
     init() {
         if on { show() }
@@ -46,6 +51,7 @@ final class PondModel {
 
     private func show() {
         hide()
+        layout = NSScreen.screens.map(\.frame)
         windows = NSScreen.screens.map(window)
         windows.forEach { $0.orderFront(nil) }
         cursor = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
@@ -54,11 +60,26 @@ final class PondModel {
         screens = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.show() }
+            MainActor.assumeIsolated { self?.screensChanged() }
         }
     }
 
+    /// Rebuilds only when the screens really moved, once the burst settles.
+    private func screensChanged() {
+        pending?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.on, NSScreen.screens.map(\.frame) != self.layout else { return }
+                self.show()
+            }
+        }
+        pending = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+    }
+
     private func hide() {
+        pending?.cancel()
+        pending = nil
         cursor?.invalidate()
         cursor = nil
         if let screens { NotificationCenter.default.removeObserver(screens) }
@@ -94,6 +115,9 @@ final class PondModel {
         }
         let web = WKWebView(frame: NSRect(origin: .zero, size: screen.frame.size), configuration: config)
         web.autoresizingMask = [.width, .height]
+        // Black, not white, until the page paints.
+        web.setValue(false, forKey: "drawsBackground")
+        web.underPageBackgroundColor = .black
         if ProcessInfo.processInfo.environment["ZYX_POND_LOG"] == "1" { web.navigationDelegate = PondLog.shared }
         web.load(URLRequest(url: Self.url))
         window.contentView = web
