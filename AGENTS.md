@@ -7,7 +7,8 @@
 - `Sources/Zyx/Island.swift`: zyx itself, a Dynamic Island on the notch, one borderless panel per notched screen at `.statusBar + 8` (at the status bar level, macOS 27 draws its own notch layer over it). It grows on hover with a spring and a haptic and shows Clawd; a click opens the tools, one row each (a whole row is the switch, blue circle when on), and Quit. It shows a notice when a Claude Code session finishes a turn; a click on the notice selects that tmux pane and brings Ghostty forward. The panel is sized once; only its SwiftUI content animates.
 - `Sources/ZyxKit/Notch.swift`, `Clawd.swift`, `Wardrobe.swift`, `Notice.swift`: the notch geometry, Clawd's pixels, Clawd's accessories, and the `zyx://done` URL the hook sends.
 - `scripts/claude-stop-hook.sh`: the Claude Code Stop hook that sends `zyx://done?pane=…&title=…&message=…&active=…` with `open -g`. Install it under `Stop` in `~/.claude/settings.json`.
-- `Resources/`: `Info.plist`, `Logo.svg` (source of `AppIcon.icns`).
+- `Resources/`: `Info.plist`, `Logo.svg`, and `AppIcon.icon`, an Icon Composer icon made from the logo. `scripts/bundle.sh` compiles it with `actool` into `Assets.car` (macOS 26 and later, no gray frame) and `AppIcon.icns` (earlier versions).
+- `scripts/notarize.sh`: notarizes and staples the app with the notarytool keychain profile `zyx-notary`; `scripts/install.sh` runs it and skips it when the profile is missing.
 
 ## Rules
 
