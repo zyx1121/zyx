@@ -22,8 +22,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         island = Island(dopamine: dopamine, stick: stick)
         // stick's desktop daemon: agents drive this Mac through it, and the
         // island peeks while they do.
-        stickdObserve { _ in
-            MainActor.assumeIsolated { (NSApp.delegate as? AppDelegate)?.island?.agentActed() }
+        stickdIdentify { port in
+            Peer.session(fromPort: port, sessions: Agent.load().map(\.pid))
+        }
+        stickdObserve { command, session in
+            MainActor.assumeIsolated {
+                (NSApp.delegate as? AppDelegate)?.island?.agentActed(command, session: session)
+            }
         }
         startStickd()
     }

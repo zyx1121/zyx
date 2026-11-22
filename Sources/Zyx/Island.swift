@@ -59,8 +59,14 @@ final class Island {
     private var monitors: [Any] = []
     private var dismiss: DispatchWorkItem?
     private var settle: DispatchWorkItem?
-    /// Reads the sessions again every second while the cursor is on the island.
+    /// Reads the sessions every second, to list them and to see one start
+    /// waiting for the person.
     private var poll: Timer?
+    /// The tab titles as last read from tmux: read while the cursor is on
+    /// the island, or when a session is new or starts waiting, not every
+    /// second.
+    private var titles: [String: String] = [:]
+    private var waiting: Set<String> = []
 
     init(dopamine: DopamineModel, stick: StickModel) {
         self.dopamine = dopamine
@@ -87,13 +93,15 @@ final class Island {
             MainActor.assumeIsolated { self?.close() }
         }
         monitors = [global, local, outside].compactMap { $0 }
+        poll = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.tick() }
+        }
     }
 
     /// Shows a finished session, unless its tab is already on screen.
     func show(_ notice: Notice) {
         let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         guard notice.worthShowing(terminalInFront: front == Terminal.bundle) else { return }
-        refreshAgents()
         for island in islands {
             island.state.tools = false
             island.state.notice = notice
@@ -102,13 +110,18 @@ final class Island {
         schedule(after: Shape.noticeTime)
     }
 
-    /// An agent ran a command through stickd: the island peeks with Bean
-    /// for a moment, so a person sees that the Mac is being driven.
-    func agentActed() {
+    /// An agent ran a command through stickd: the island shows which agent
+    /// and what it does, for a moment, so a person sees who drives the Mac.
+    /// `session` is the pid of the Claude Code session that sent it.
+    func agentActed(_ command: String, session: Int32?) {
+        guard let action = Agent.action(command) else { return }
         settle?.cancel()
-        for island in islands { island.state.acting = true }
+        let agent = islands.first?.state.agents.first { $0.pid == session }
+            ?? session.flatMap { pid in name(Agent.load()).first { $0.pid == pid } }
+        let acting = Acting(agent: agent, action: action)
+        for island in islands where island.state.acting != acting { island.state.acting = acting }
         let work = DispatchWorkItem { [weak self] in
-            MainActor.assumeIsolated { self?.islands.forEach { $0.state.acting = false } }
+            MainActor.assumeIsolated { self?.islands.forEach { $0.state.acting = nil } }
         }
         settle = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
@@ -151,28 +164,43 @@ final class Island {
                 hovering ? dismiss?.cancel() : schedule(after: Shape.linger)
             }
         }
-        let watching = islands.contains { $0.state.hovering }
-        if watching, poll == nil {
-            poll = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-                MainActor.assumeIsolated { self?.refreshAgents() }
-            }
-        } else if !watching {
-            poll?.invalidate()
-            poll = nil
+    }
+
+    /// Reads the sessions; a session that starts waiting for the person
+    /// opens the island with a notice, like a finished one.
+    private func tick() {
+        let agents = Agent.load()
+        let nowWaiting = Set(agents.filter(\.status.isWaiting).map(\.id))
+        let started = agents.filter { $0.status.isWaiting && !waiting.contains($0.id) }
+        waiting = nowWaiting
+        let unnamed = agents.contains { $0.pane.map { titles[$0] == nil } ?? false }
+        if unnamed || !started.isEmpty || islands.contains(where: \.state.hovering) { titles = Terminal.titles() }
+        publish(name(agents))
+        for agent in name(started) {
+            guard let pane = agent.pane else { continue }
+            show(Notice(pane: pane, title: agent.name, message: agent.status.label,
+                        active: Terminal.isActive(pane: pane)))
         }
     }
 
-    /// Reads the running sessions, named by their tmux tab titles.
+    /// Reads the running sessions with fresh tab titles.
     private func refreshAgents() {
-        var agents = Agent.load()
-        let titles = Terminal.titles()
-        for index in agents.indices {
-            if let pane = agents[index].pane, let title = titles[pane], !title.isEmpty {
-                agents[index].name = title
-            }
-        }
+        titles = Terminal.titles()
+        publish(name(Agent.load()))
+    }
+
+    private func publish(_ agents: [Agent]) {
         for island in islands where island.state.agents != agents {
             island.state.agents = agents
+        }
+    }
+
+    /// Names each session by its tmux tab title, when it has one.
+    private func name(_ agents: [Agent]) -> [Agent] {
+        agents.map { agent in
+            var agent = agent
+            if let pane = agent.pane, let title = titles[pane], !title.isEmpty { agent.name = title }
+            return agent
         }
     }
 
@@ -230,6 +258,13 @@ private enum Terminal {
         NSRunningApplication.runningApplications(withBundleIdentifier: bundle).first?.activate()
     }
 
+    /// Whether the pane is on screen: its window is the active one in an
+    /// attached tmux session.
+    static func isActive(pane: String) -> Bool {
+        run(["display", "-p", "-t", pane, "#{&&:#{window_active},#{session_attached}}"])
+            .trimmingCharacters(in: .whitespacesAndNewlines) == "1"
+    }
+
     /// Each pane's tab title, which the status line keeps in `@cc_title`.
     static func titles() -> [String: String] {
         let lines = run(["list-panes", "-a", "-F", "#{pane_id}\t#{@cc_title}"]).split(separator: "\n")
@@ -254,6 +289,12 @@ private enum Terminal {
     }
 }
 
+/// An agent driving the Mac: which one, when known, and what it does.
+private struct Acting: Equatable {
+    let agent: Agent?
+    let action: String
+}
+
 @MainActor
 @Observable
 private final class IslandState {
@@ -261,7 +302,7 @@ private final class IslandState {
     var notice: Notice?
     var tools = false
     /// An agent is driving the Mac through stickd.
-    var acting = false
+    var acting: Acting?
     /// The running Claude Code sessions, read when the cursor arrives.
     var agents: [Agent] = []
 
@@ -369,13 +410,15 @@ private struct IslandView: View {
     let open: @MainActor (Agent) -> Void
 
     var body: some View {
-        let hovering = state.hovering || state.acting
+        let hovering = state.hovering
         let notice = state.notice
         let tools = state.tools
         let roster = state.roster
-        let grow = tools ? Shape.toolsGrow : notice != nil ? Shape.noticeGrow
+        let acting = notice == nil && !tools && !roster ? state.acting : nil
+        let grow = tools ? Shape.toolsGrow : notice != nil || acting != nil ? Shape.noticeGrow
             : roster ? Shape.rosterGrow(state.agents.count) : hovering ? Shape.grow : .zero
-        let corner = state.open || roster ? Shape.openCorner : hovering ? Shape.hoverCorner : Shape.corner
+        let corner = state.open || roster || acting != nil ? Shape.openCorner
+            : hovering ? Shape.hoverCorner : Shape.corner
         let peek = hovering && !state.open && !roster
         IslandShape(flare: Shape.flare, corner: corner)
             .fill(.black)
@@ -401,6 +444,9 @@ private struct IslandView: View {
                         ToolRows(dopamine: dopamine, stick: stick)
                     } else if roster {
                         AgentRows(agents: state.agents, pointed: state.pointed, open: open)
+                    } else if let acting {
+                        ActingRow(acting: acting)
+                            .allowsHitTesting(false)
                     }
                 }
                 .padding(.horizontal, Shape.flare + Shape.inset - 8)
@@ -412,6 +458,7 @@ private struct IslandView: View {
             .animation(.spring(response: 0.45, dampingFraction: 0.72), value: notice)
             .animation(.spring(response: 0.45, dampingFraction: 0.72), value: tools)
             .animation(.spring(response: 0.45, dampingFraction: 0.72), value: roster)
+            .animation(.spring(response: 0.45, dampingFraction: 0.72), value: acting)
             .animation(.spring(response: 0.45, dampingFraction: 0.72), value: state.agents.count)
     }
 }
@@ -430,6 +477,29 @@ private struct NoticeRow: View {
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.white)
                 Text(notice.message.isEmpty ? "Done" : notice.message)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.white.opacity(0.6))
+            }
+            .lineLimit(1)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 8)
+    }
+}
+
+/// The agent driving the Mac and what it does, while stickd runs its
+/// commands.
+private struct ActingRow: View {
+    let acting: Acting
+
+    var body: some View {
+        HStack(spacing: 12) {
+            BeanView(seed: acting.agent?.id ?? "", pixel: Shape.beanPixel)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(acting.agent?.name ?? "An agent")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white)
+                Text(acting.action)
                     .font(.system(size: 11))
                     .foregroundStyle(.white.opacity(0.6))
             }
@@ -469,7 +539,7 @@ private struct AgentRow: View {
                     .foregroundStyle(.white)
                     .lineLimit(1)
                 Spacer(minLength: 8)
-                StatusLabel(status: agent.status)
+                StatusLabel(agent: agent)
             }
             .padding(.horizontal, 8)
             .frame(height: Shape.row)
@@ -483,23 +553,31 @@ private struct AgentRow: View {
     }
 }
 
-/// A dot and a word: green and pulsing while the session works.
+/// A dot, a word and how long it has held: the dot pulses green while the
+/// session works and yellow while it waits for the person.
 private struct StatusLabel: View {
-    let status: Agent.Status
+    let agent: Agent
     @State private var pulse = false
 
     var body: some View {
-        let working = status == .working
+        let status = agent.status
+        let waiting = status.isWaiting
+        let moving = status == .working || waiting
         HStack(spacing: 5) {
             Circle()
-                .fill(working ? Color(red: 0.36, green: 0.82, blue: 0.5)
-                      : status == .idle ? Color.white.opacity(0.35) : Color(red: 0.96, green: 0.77, blue: 0.26))
+                .fill(waiting ? Color(red: 0.96, green: 0.77, blue: 0.26)
+                      : status == .idle ? Color.white.opacity(0.35) : Color(red: 0.36, green: 0.82, blue: 0.5))
                 .frame(width: 6, height: 6)
-                .opacity(working && pulse ? 0.35 : 1)
-                .animation(working ? .easeInOut(duration: 0.8).repeatForever() : .default, value: pulse)
+                .opacity(moving && pulse ? 0.35 : 1)
+                .animation(moving ? .easeInOut(duration: 0.8).repeatForever() : .default, value: pulse)
             Text(status.label)
                 .font(.system(size: 11))
-                .foregroundStyle(.white.opacity(0.6))
+                .foregroundStyle(waiting ? Color(red: 0.96, green: 0.77, blue: 0.26) : .white.opacity(0.6))
+            TimelineView(.periodic(from: .now, by: 20)) { context in
+                Text(agent.elapsed(now: context.date))
+                    .font(.system(size: 11).monospacedDigit())
+                    .foregroundStyle(.white.opacity(0.4))
+            }
         }
         .onAppear { pulse = true }
     }

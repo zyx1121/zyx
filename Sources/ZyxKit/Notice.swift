@@ -12,6 +12,13 @@ public struct Notice: Equatable, Sendable {
     /// Whether the pane's tmux window was the one on screen.
     public let active: Bool
 
+    public init(pane: String, title: String, message: String, active: Bool) {
+        self.pane = pane
+        self.title = title
+        self.message = message
+        self.active = active
+    }
+
     public init?(url: URL) {
         guard url.scheme == "zyx", url.host == "done",
               let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
