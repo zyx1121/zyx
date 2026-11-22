@@ -35,7 +35,10 @@ public struct Notice: Equatable, Sendable {
     }
 
     /// The tmux commands that bring its pane on screen.
-    public var jump: [[String]] {
+    public var jump: [[String]] { Self.jump(to: pane) }
+
+    /// The tmux commands that bring `pane` on screen.
+    public static func jump(to pane: String) -> [[String]] {
         [["select-window", "-t", pane], ["select-pane", "-t", pane]]
     }
 }

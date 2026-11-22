@@ -12,12 +12,17 @@ private enum Shape {
     static let toolsGrow = CGSize(width: 180, height: 126)
     static let row: CGFloat = 34
     static let icon: CGFloat = 24
-    /// Clawd's pixels are as tall as twice their width, like a terminal
-    /// cell's quarter blocks.
-    static let clawdPixel = CGSize(width: 1.5, height: 3)
-    static let noticeClawdPixel = CGSize(width: 2, height: 4)
-    static let clawdInset: CGFloat = 10
+    static let beanPixel: CGFloat = 1.5
+    static let beanInset: CGFloat = 10
+    /// The most agents the island lists at once.
+    static let maxAgents = 6
+    /// How much it grows to list the agents: a row each under the camera.
+    static func rosterGrow(_ count: Int) -> CGSize {
+        CGSize(width: 180, height: CGFloat(min(count, maxAgents)) * row + 24)
+    }
     static let inset: CGFloat = 18
+    /// The space under the last row.
+    static let rowsBottom: CGFloat = 10
     /// Room around the largest island for the spring to overshoot into.
     static let slack = CGSize(width: 24, height: 12)
     /// The flare where the island meets the top edge, like the notch itself.
@@ -38,7 +43,9 @@ private enum Shape {
 /// - At rest it is a black shape the size of the notch, so it disappears
 ///   into the camera housing.
 /// - Under the cursor it grows with a spring and a tap on the trackpad, and
-///   Clawd looks out of the left wing.
+///   lists the running Claude Code sessions: each one a Bean in its own
+///   color and outfit, its tab title and its status. A click on one brings
+///   its tmux tab forward.
 /// - A click opens it to the tools, one row each, and Quit.
 /// - A Claude Code session that finishes a turn opens it with a notice; a
 ///   click on the notice brings that session's tmux tab forward.
@@ -52,6 +59,8 @@ final class Island {
     private var monitors: [Any] = []
     private var dismiss: DispatchWorkItem?
     private var settle: DispatchWorkItem?
+    /// Reads the sessions again every second while the cursor is on the island.
+    private var poll: Timer?
 
     init(dopamine: DopamineModel, stick: StickModel) {
         self.dopamine = dopamine
@@ -84,6 +93,7 @@ final class Island {
     func show(_ notice: Notice) {
         let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         guard notice.worthShowing(terminalInFront: front == Terminal.bundle) else { return }
+        refreshAgents()
         for island in islands {
             island.state.tools = false
             island.state.notice = notice
@@ -92,7 +102,7 @@ final class Island {
         schedule(after: Shape.noticeTime)
     }
 
-    /// An agent ran a command through stickd: the island peeks with Clawd
+    /// An agent ran a command through stickd: the island peeks with Bean
     /// for a moment, so a person sees that the Mac is being driven.
     func agentActed() {
         settle?.cancel()
@@ -115,7 +125,8 @@ final class Island {
         layout = notches
         islands.forEach { $0.panel.orderOut(nil) }
         islands = notches.map { notch in
-            Screen(notch: notch, dopamine: dopamine, stick: stick) { [weak self] in self?.tap() }
+            Screen(notch: notch, dopamine: dopamine, stick: stick,
+                   tap: { [weak self] in self?.tap() }, open: { Terminal.focus(pane: $0.pane) })
         }
     }
 
@@ -125,8 +136,11 @@ final class Island {
             let state = island.state
             let hovering = Notch.hovers(point, notch: island.notch, grown: island.shown,
                                         hovering: state.hovering)
+            let pointed = hovering ? island.agent(at: point)?.id : nil
+            if pointed != state.pointed { state.pointed = pointed }
             guard hovering != state.hovering else { continue }
             if hovering, !state.open {
+                refreshAgents()
                 NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
             }
             state.hovering = hovering
@@ -137,6 +151,29 @@ final class Island {
                 hovering ? dismiss?.cancel() : schedule(after: Shape.linger)
             }
         }
+        let watching = islands.contains { $0.state.hovering }
+        if watching, poll == nil {
+            poll = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.refreshAgents() }
+            }
+        } else if !watching {
+            poll?.invalidate()
+            poll = nil
+        }
+    }
+
+    /// Reads the running sessions, named by their tmux tab titles.
+    private func refreshAgents() {
+        var agents = Agent.load()
+        let titles = Terminal.titles()
+        for index in agents.indices {
+            if let pane = agents[index].pane, let title = titles[pane], !title.isEmpty {
+                agents[index].name = title
+            }
+        }
+        for island in islands where island.state.agents != agents {
+            island.state.agents = agents
+        }
     }
 
     /// A click on the island: a notice opens its session, anything else
@@ -144,7 +181,7 @@ final class Island {
     private func tap() {
         if let notice = islands.lazy.compactMap(\.state.notice).first {
             close()
-            Terminal.focus(notice)
+            Terminal.focus(pane: notice.pane)
             return
         }
         let opening = !(islands.first?.state.tools ?? false)
@@ -181,22 +218,39 @@ final class Island {
 /// The terminal that runs tmux with the Claude Code sessions.
 private enum Terminal {
     static let bundle = "com.mitchellh.ghostty"
+    private static let tmux = ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux"]
+        .first { FileManager.default.isExecutableFile(atPath: $0) }
 
-    /// Selects the notice's tmux window and pane, then brings the terminal
-    /// to the front.
-    static func focus(_ notice: Notice) {
-        let tmux = ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux"]
-            .first { FileManager.default.isExecutableFile(atPath: $0) }
-        if let tmux {
-            for arguments in notice.jump {
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: tmux)
-                process.arguments = arguments
-                try? process.run()
-                process.waitUntilExit()
-            }
+    /// Selects the pane's tmux window and pane, then brings the terminal to
+    /// the front.
+    static func focus(pane: String?) {
+        if let pane {
+            for arguments in Notice.jump(to: pane) { _ = run(arguments) }
         }
         NSRunningApplication.runningApplications(withBundleIdentifier: bundle).first?.activate()
+    }
+
+    /// Each pane's tab title, which the status line keeps in `@cc_title`.
+    static func titles() -> [String: String] {
+        let lines = run(["list-panes", "-a", "-F", "#{pane_id}\t#{@cc_title}"]).split(separator: "\n")
+        return Dictionary(lines.compactMap { line in
+            let parts = line.split(separator: "\t", maxSplits: 1)
+            return parts.count == 2 ? (String(parts[0]), String(parts[1])) : nil
+        }, uniquingKeysWith: { first, _ in first })
+    }
+
+    private static func run(_ arguments: [String]) -> String {
+        guard let tmux else { return "" }
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: tmux)
+        process.arguments = arguments
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return "" }
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return String(decoding: data, as: UTF8.self)
     }
 }
 
@@ -208,6 +262,15 @@ private final class IslandState {
     var tools = false
     /// An agent is driving the Mac through stickd.
     var acting = false
+    /// The running Claude Code sessions, read when the cursor arrives.
+    var agents: [Agent] = []
+
+    /// The agent row under the cursor. The island tracks the cursor itself:
+    /// SwiftUI's hover in a panel of an inactive app lags a row behind.
+    var pointed: String?
+
+    /// Listing the agents: under the cursor, not open, and some are running.
+    var roster: Bool { hovering && !open && !agents.isEmpty }
 
     /// Open: showing a notice or the tools, not just grown under the cursor.
     var open: Bool { notice != nil || tools }
@@ -225,15 +288,19 @@ private struct Screen {
     let panel: NSPanel
 
     /// The island as it is drawn now, for hover.
-    var shown: NSRect { state.tools ? tooled : state.notice != nil ? noticed : grown }
+    var shown: NSRect {
+        state.tools ? tooled : state.notice != nil ? noticed
+            : state.roster ? Notch.grown(notch, by: Shape.rosterGrow(state.agents.count)) : grown
+    }
 
-    init(notch: NSRect, dopamine: DopamineModel, stick: StickModel, tap: @escaping @MainActor () -> Void) {
+    init(notch: NSRect, dopamine: DopamineModel, stick: StickModel, tap: @escaping @MainActor () -> Void,
+         open: @escaping @MainActor (Agent) -> Void) {
         self.notch = notch
         grown = Notch.grown(notch, by: Shape.grow)
         noticed = Notch.grown(notch, by: Shape.noticeGrow)
         tooled = Notch.grown(notch, by: Shape.toolsGrow)
-        let largest = CGSize(width: max(Shape.noticeGrow.width, Shape.toolsGrow.width),
-                             height: max(Shape.noticeGrow.height, Shape.toolsGrow.height))
+        let sizes = [Shape.noticeGrow, Shape.toolsGrow, Shape.rosterGrow(Shape.maxAgents)]
+        let largest = CGSize(width: sizes.map(\.width).max()!, height: sizes.map(\.height).max()!)
         let frame = Notch.grown(Notch.grown(notch, by: largest),
                                 by: CGSize(width: Shape.slack.width + 2 * Shape.flare, height: Shape.slack.height))
         panel = IslandPanel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel],
@@ -251,11 +318,23 @@ private struct Screen {
         panel.hasShadow = false
         panel.ignoresMouseEvents = true
         let host = ClickHost(rootView: IslandView(state: state, notch: notch.size, dopamine: dopamine,
-                                                  stick: stick, tap: tap))
+                                                  stick: stick, tap: tap, open: open))
         // The panel keeps one size; the content animates inside it.
         host.sizingOptions = []
         panel.contentView = host
         panel.orderFrontRegardless()
+    }
+
+    /// The agent whose row is under `point`, in screen coordinates. The rows
+    /// sit at the bottom of the island, `Shape.row` tall each.
+    func agent(at point: NSPoint) -> Agent? {
+        guard state.roster else { return nil }
+        let agents = Array(state.agents.prefix(Shape.maxAgents))
+        let island = Notch.grown(notch, by: Shape.rosterGrow(agents.count))
+        let bottom = island.minY + Shape.rowsBottom
+        guard island.insetBy(dx: Shape.flare, dy: 0).contains(point), point.y >= bottom else { return nil }
+        let fromBottom = Int((point.y - bottom) / Shape.row)
+        return fromBottom < agents.count ? agents[agents.count - 1 - fromBottom] : nil
     }
 
     /// The panel takes clicks only while the island is under the cursor or
@@ -287,23 +366,26 @@ private struct IslandView: View {
     let dopamine: DopamineModel
     let stick: StickModel
     let tap: @MainActor () -> Void
+    let open: @MainActor (Agent) -> Void
 
     var body: some View {
         let hovering = state.hovering || state.acting
         let notice = state.notice
         let tools = state.tools
-        let grow = tools ? Shape.toolsGrow : notice != nil ? Shape.noticeGrow : hovering ? Shape.grow : .zero
-        let corner = state.open ? Shape.openCorner : hovering ? Shape.hoverCorner : Shape.corner
-        let peek = hovering && !state.open
+        let roster = state.roster
+        let grow = tools ? Shape.toolsGrow : notice != nil ? Shape.noticeGrow
+            : roster ? Shape.rosterGrow(state.agents.count) : hovering ? Shape.grow : .zero
+        let corner = state.open || roster ? Shape.openCorner : hovering ? Shape.hoverCorner : Shape.corner
+        let peek = hovering && !state.open && !roster
         IslandShape(flare: Shape.flare, corner: corner)
             .fill(.black)
             .frame(width: notch.width + grow.width + 2 * Shape.flare, height: notch.height + grow.height)
             .contentShape(Rectangle())
             .onTapGesture(perform: tap)
             .overlay(alignment: .leading) {
-                // Clawd in the left wing, beside the camera.
-                ClawdView(pixel: Shape.clawdPixel)
-                    .padding(.leading, Shape.flare + Shape.clawdInset)
+                // Bean in the left wing, beside the camera.
+                BeanView(seed: nil, pixel: Shape.beanPixel)
+                    .padding(.leading, Shape.flare + Shape.beanInset)
                     .frame(height: notch.height + (peek ? Shape.grow.height : 0), alignment: .center)
                     .frame(maxHeight: .infinity, alignment: .top)
                     .opacity(peek ? 1 : 0)
@@ -313,30 +395,36 @@ private struct IslandView: View {
             .overlay(alignment: .bottom) {
                 Group {
                     if let notice {
-                        NoticeRow(notice: notice)
+                        NoticeRow(notice: notice, agents: state.agents)
                             .allowsHitTesting(false)
                     } else if tools {
                         ToolRows(dopamine: dopamine, stick: stick)
+                    } else if roster {
+                        AgentRows(agents: state.agents, pointed: state.pointed, open: open)
                     }
                 }
                 .padding(.horizontal, Shape.flare + Shape.inset - 8)
-                .padding(.bottom, 10)
+                .padding(.bottom, Shape.rowsBottom)
                 .transition(.opacity.combined(with: .scale(scale: 0.85, anchor: .top)))
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .animation(.spring(response: 0.38, dampingFraction: 0.68), value: hovering)
             .animation(.spring(response: 0.45, dampingFraction: 0.72), value: notice)
             .animation(.spring(response: 0.45, dampingFraction: 0.72), value: tools)
+            .animation(.spring(response: 0.45, dampingFraction: 0.72), value: roster)
+            .animation(.spring(response: 0.45, dampingFraction: 0.72), value: state.agents.count)
     }
 }
 
-/// Clawd, the session name and the first line of its last reply.
+/// The session's Bean, its name and the first line of its last reply.
 private struct NoticeRow: View {
     let notice: Notice
+    let agents: [Agent]
 
     var body: some View {
         HStack(spacing: 12) {
-            ClawdView(pixel: Shape.noticeClawdPixel)
+            BeanView(seed: agents.first { $0.pane == notice.pane }?.id ?? notice.pane,
+                     pixel: Shape.beanPixel)
             VStack(alignment: .leading, spacing: 2) {
                 Text(notice.title)
                     .font(.system(size: 13, weight: .semibold))
@@ -349,6 +437,71 @@ private struct NoticeRow: View {
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 8)
+    }
+}
+
+/// The running sessions, one row each: Bean, the tab title and the status.
+private struct AgentRows: View {
+    let agents: [Agent]
+    let pointed: String?
+    let open: @MainActor (Agent) -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ForEach(agents.prefix(Shape.maxAgents)) { agent in
+                AgentRow(agent: agent, hover: agent.id == pointed) { open(agent) }
+            }
+        }
+    }
+}
+
+private struct AgentRow: View {
+    let agent: Agent
+    let hover: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                BeanView(seed: agent.id, pixel: Shape.beanPixel)
+                Text(agent.name)
+                    .font(.system(size: 13))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                StatusLabel(status: agent.status)
+            }
+            .padding(.horizontal, 8)
+            .frame(height: Shape.row)
+            .background(hover ? AnyShapeStyle(.white.opacity(0.1)) : AnyShapeStyle(.clear),
+                        in: .rect(cornerRadius: 10, style: .continuous))
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(agent.name)
+        .accessibilityValue(agent.status.label)
+    }
+}
+
+/// A dot and a word: green and pulsing while the session works.
+private struct StatusLabel: View {
+    let status: Agent.Status
+    @State private var pulse = false
+
+    var body: some View {
+        let working = status == .working
+        HStack(spacing: 5) {
+            Circle()
+                .fill(working ? Color(red: 0.36, green: 0.82, blue: 0.5)
+                      : status == .idle ? Color.white.opacity(0.35) : Color(red: 0.96, green: 0.77, blue: 0.26))
+                .frame(width: 6, height: 6)
+                .opacity(working && pulse ? 0.35 : 1)
+                .animation(working ? .easeInOut(duration: 0.8).repeatForever() : .default, value: pulse)
+            Text(status.label)
+                .font(.system(size: 11))
+                .foregroundStyle(.white.opacity(0.6))
+        }
+        .onAppear { pulse = true }
     }
 }
 
@@ -452,26 +605,43 @@ private final class IslandPanel: NSPanel {
     }
 }
 
-/// Clawd drawn from its block characters: one path of pixels in the Claude
-/// Code orange.
-private struct ClawdView: View {
-    let pixel: CGSize
-    private static let grid = Clawd.pixels()
-    private static let color = Color(red: Double(Clawd.rgb.red) / 255,
-                                     green: Double(Clawd.rgb.green) / 255,
-                                     blue: Double(Clawd.rgb.blue) / 255)
+/// Bean in the look its seed gives, or plain without a seed. A dressed Bean
+/// sits in a fixed box with room for hats, props and shoes, so the rows
+/// line up.
+private struct BeanView: View {
+    let pixel: CGFloat
+    /// The part of Bean's grid drawn: left, top, width and height in cells.
+    private let cells: (x: Int, y: Int, width: Int, height: Int)
+    private let dressed: (x: Int, y: Int, grid: Wardrobe.Grid)
+
+    init(seed: String?, pixel: CGFloat) {
+        self.pixel = pixel
+        if let seed {
+            let look = Wardrobe.look(seed: seed)
+            dressed = Wardrobe.dress(look.items, color: look.color)
+            cells = (-3, -7, 24, 19)
+        } else {
+            dressed = Wardrobe.dress([])
+            cells = (0, 0, 18, 10)
+        }
+    }
 
     var body: some View {
-        let grid = Self.grid
-        Path { path in
-            for (y, row) in grid.enumerated() {
-                for (x, on) in row.enumerated() where on {
-                    path.addRect(CGRect(x: CGFloat(x) * pixel.width, y: CGFloat(y) * pixel.height,
-                                        width: pixel.width, height: pixel.height))
+        let (cells, dressed, pixel) = (cells, dressed, pixel)
+        Canvas { context, _ in
+            for (row, line) in dressed.grid.enumerated() {
+                for (column, color) in line.enumerated() {
+                    guard let color else { continue }
+                    let x = column - dressed.x - cells.x, y = row - dressed.y - cells.y
+                    guard (0..<cells.width).contains(x), (0..<cells.height).contains(y) else { continue }
+                    context.fill(Path(CGRect(x: CGFloat(x) * pixel, y: CGFloat(y) * pixel,
+                                             width: pixel, height: pixel)),
+                                 with: .color(Color(red: Double(color >> 16 & 0xFF) / 255,
+                                                    green: Double(color >> 8 & 0xFF) / 255,
+                                                    blue: Double(color & 0xFF) / 255)))
                 }
             }
         }
-        .fill(Self.color)
-        .frame(width: CGFloat(grid[0].count) * pixel.width, height: CGFloat(grid.count) * pixel.height)
+        .frame(width: CGFloat(cells.width) * pixel, height: CGFloat(cells.height) * pixel)
     }
 }
