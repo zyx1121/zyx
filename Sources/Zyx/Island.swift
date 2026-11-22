@@ -67,7 +67,7 @@ final class Island {
                                         hovering: island.state.hovering)
             guard hovering != island.state.hovering else { continue }
             if hovering {
-                NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+                NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
             }
             island.state.hovering = hovering
         }
