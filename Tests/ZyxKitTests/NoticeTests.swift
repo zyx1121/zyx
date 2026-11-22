@@ -6,13 +6,13 @@ import Testing
     var parts = URLComponents(string: "zyx://done")!
     parts.queryItems = [
         URLQueryItem(name: "pane", value: "%16"),
-        URLQueryItem(name: "title", value: "zyx menubar 動態島框架"),
-        URLQueryItem(name: "message", value: "Clawd 拼出來了。\n\n細節"),
+        URLQueryItem(name: "title", value: "zyx menu bar island"),
+        URLQueryItem(name: "message", value: "Clawd is built.\n\nDetails"),
         URLQueryItem(name: "active", value: "0"),
     ]
     let notice = try #require(Notice(url: parts.url!))
-    #expect(notice.title == "zyx menubar 動態島框架")
-    #expect(notice.message == "Clawd 拼出來了。")
+    #expect(notice.title == "zyx menu bar island")
+    #expect(notice.message == "Clawd is built.")
     #expect(!notice.active)
     #expect(notice.jump == [["select-window", "-t", "%16"], ["select-pane", "-t", "%16"]])
 }
