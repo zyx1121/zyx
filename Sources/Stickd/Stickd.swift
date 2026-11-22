@@ -50,17 +50,36 @@ let inputCmds: Set<String> = ["click", "move", "scroll", "key", "type", "paste",
 
 func locked<T>(_ l: NSLock, _ f: () throws -> T) rethrows -> T { l.lock(); defer { l.unlock() }; return try f() }
 
-var onCommand: (@Sendable (String) -> Void)?
+var onCommand: (@Sendable (String, Int32?) -> Void)?
+var identify: (@Sendable (UInt16) -> Int32?)?
 
-/// Calls `handler` on the main thread after each command, with its first word.
-public func stickdObserve(_ handler: @escaping @Sendable (String) -> Void) {
+/// Calls `handler` on the main thread after each command, with its first
+/// word and the client `stickdIdentify` named, if any.
+public func stickdObserve(_ handler: @escaping @Sendable (String, Int32?) -> Void) {
   locked(stateLock) { onCommand = handler }
+}
+
+/// Names the client of each request from its TCP port, while the connection
+/// is still open: zyx returns the pid of the Claude Code session behind it.
+public func stickdIdentify(_ resolver: @escaping @Sendable (UInt16) -> Int32?) {
+  locked(stateLock) { identify = resolver }
+}
+
+/// The client's TCP port on connection `c`.
+func peerPort(_ c: Int32) -> UInt16? {
+  var address = sockaddr_in()
+  var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+  let got = withUnsafeMutablePointer(to: &address) {
+    $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getpeername(c, $0, &length) }
+  }
+  return got == 0 ? UInt16(bigEndian: address.sin_port) : nil
 }
 
 func log(_ line: String, _ ok: Bool, _ ms: Int, _ result: String) {
   if let notify = locked(stateLock, { onCommand }) {
     let word = String(line.split(separator: " ").first ?? "")
-    DispatchQueue.main.async { notify(word) }
+    let client = Thread.current.threadDictionary["stickdClient"] as? Int32
+    DispatchQueue.main.async { notify(word, client) }
   }
   let first = result.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? ""
   let stamp = ISO8601DateFormatter().string(from: Date())
@@ -166,6 +185,9 @@ func handle(_ c: Int32) {
     return respond(c, 200, data, "application/octet-stream")
   }
   if path == "/run" && req.method == "POST" {
+    if let port = peerPort(c), let resolver = locked(stateLock, { identify }) {
+      Thread.current.threadDictionary["stickdClient"] = resolver(port)
+    }
     let (ok, text) = runScript(String(decoding: req.body, as: UTF8.self), force: req.headers["x-fw-force"] == "1")
     return reply(c, ok ? 200 : 400, text)
   }
