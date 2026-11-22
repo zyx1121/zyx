@@ -9,7 +9,7 @@ private enum Shape {
     /// How much it grows to show a notice: a row under the camera.
     static let noticeGrow = CGSize(width: 180, height: 50)
     /// How much it grows to show the tools: their rows under the camera.
-    static let toolsGrow = CGSize(width: 180, height: 92)
+    static let toolsGrow = CGSize(width: 180, height: 126)
     static let row: CGFloat = 34
     static let icon: CGFloat = 24
     /// Clawd's pixels are as tall as twice their width, like a terminal
@@ -45,14 +45,17 @@ private enum Shape {
 @MainActor
 final class Island {
     private let dopamine: DopamineModel
+    private let stick: StickModel
     private var islands: [Screen] = []
     private var layout: [NSRect] = []
     private var observer: NSObjectProtocol?
     private var monitors: [Any] = []
     private var dismiss: DispatchWorkItem?
+    private var settle: DispatchWorkItem?
 
-    init(dopamine: DopamineModel) {
+    init(dopamine: DopamineModel, stick: StickModel) {
         self.dopamine = dopamine
+        self.stick = stick
         build()
         observer = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
@@ -89,6 +92,18 @@ final class Island {
         schedule(after: Shape.noticeTime)
     }
 
+    /// An agent ran a command through stickd: the island peeks with Clawd
+    /// for a moment, so a person sees that the Mac is being driven.
+    func agentActed() {
+        settle?.cancel()
+        for island in islands { island.state.acting = true }
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated { self?.islands.forEach { $0.state.acting = false } }
+        }
+        settle = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
+    }
+
     /// Rebuilds only when a notch moved: brightness changes post this
     /// notification too.
     private func build() {
@@ -100,7 +115,7 @@ final class Island {
         layout = notches
         islands.forEach { $0.panel.orderOut(nil) }
         islands = notches.map { notch in
-            Screen(notch: notch, dopamine: dopamine) { [weak self] in self?.tap() }
+            Screen(notch: notch, dopamine: dopamine, stick: stick) { [weak self] in self?.tap() }
         }
     }
 
@@ -133,7 +148,10 @@ final class Island {
             return
         }
         let opening = !(islands.first?.state.tools ?? false)
-        if opening { dopamine.refresh() }
+        if opening {
+            dopamine.refresh()
+            stick.refresh()
+        }
         dismiss?.cancel()
         for island in islands {
             island.state.tools = opening
@@ -188,6 +206,8 @@ private final class IslandState {
     var hovering = false
     var notice: Notice?
     var tools = false
+    /// An agent is driving the Mac through stickd.
+    var acting = false
 
     /// Open: showing a notice or the tools, not just grown under the cursor.
     var open: Bool { notice != nil || tools }
@@ -207,7 +227,7 @@ private struct Screen {
     /// The island as it is drawn now, for hover.
     var shown: NSRect { state.tools ? tooled : state.notice != nil ? noticed : grown }
 
-    init(notch: NSRect, dopamine: DopamineModel, tap: @escaping @MainActor () -> Void) {
+    init(notch: NSRect, dopamine: DopamineModel, stick: StickModel, tap: @escaping @MainActor () -> Void) {
         self.notch = notch
         grown = Notch.grown(notch, by: Shape.grow)
         noticed = Notch.grown(notch, by: Shape.noticeGrow)
@@ -230,7 +250,8 @@ private struct Screen {
         panel.backgroundColor = .clear
         panel.hasShadow = false
         panel.ignoresMouseEvents = true
-        let host = ClickHost(rootView: IslandView(state: state, notch: notch.size, dopamine: dopamine, tap: tap))
+        let host = ClickHost(rootView: IslandView(state: state, notch: notch.size, dopamine: dopamine,
+                                                  stick: stick, tap: tap))
         // The panel keeps one size; the content animates inside it.
         host.sizingOptions = []
         panel.contentView = host
@@ -264,10 +285,11 @@ private struct IslandView: View {
     let state: IslandState
     let notch: CGSize
     let dopamine: DopamineModel
+    let stick: StickModel
     let tap: @MainActor () -> Void
 
     var body: some View {
-        let hovering = state.hovering
+        let hovering = state.hovering || state.acting
         let notice = state.notice
         let tools = state.tools
         let grow = tools ? Shape.toolsGrow : notice != nil ? Shape.noticeGrow : hovering ? Shape.grow : .zero
@@ -294,7 +316,7 @@ private struct IslandView: View {
                         NoticeRow(notice: notice)
                             .allowsHitTesting(false)
                     } else if tools {
-                        ToolRows(dopamine: dopamine)
+                        ToolRows(dopamine: dopamine, stick: stick)
                     }
                 }
                 .padding(.horizontal, Shape.flare + Shape.inset - 8)
@@ -333,11 +355,16 @@ private struct NoticeRow: View {
 /// The tools, one row each, then Quit.
 private struct ToolRows: View {
     let dopamine: DopamineModel
+    let stick: StickModel
 
     var body: some View {
         VStack(spacing: 0) {
             ToolRow(title: "Dopamine", symbol: "bolt.fill", on: dopamine.on == true, detail: dopamine.error) {
                 if let current = dopamine.on, !dopamine.busy { dopamine.set(!current) }
+            }
+            ToolRow(title: "Stick", symbol: "hand.point.up.left.fill", on: stick.on,
+                    detail: stick.on ? nil : "Paused, agents cannot click or type") {
+                stick.set(!stick.on)
             }
             ToolRow(title: "Quit zyx", symbol: "power", on: nil, detail: nil) {
                 NSApp.terminate(nil)

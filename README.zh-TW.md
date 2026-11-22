@@ -15,6 +15,7 @@ zyx 把劉海變成動態島。指向劉海它會變大，點一下打開工具�
 - **開機自動啟動**：第一次開啟時，zyx 會把自己加進登入項目。要關掉，到「系統設定」、「一般」、「登入項目」移除。
 - **Claude Code 通知**：tmux 裡的 Claude Code session 做完一輪時，動態島會顯示它的名字和回覆的第 1 行。點通知會跳到那個 tmux 分頁。把 `scripts/claude-stop-hook.sh` 設成 `~/.claude/settings.json` 的 `Stop` hook。
 - **Dopamine**：闔蓋時讓 Mac 保持清醒。開關會執行 `pmset -a disablesleep 1`，並顯示目前的系統設定。
+- **Stick**：內建 [stick](https://github.com/zyx1121/stick) 的桌面 daemon，讓 agent 看得到、操作得了這台 Mac。agent 動作時動態島會探出來。開關或 Ctrl+Option+F12 可暫停。
 
 ## 快速開始
 

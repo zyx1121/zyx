@@ -10,7 +10,10 @@ let package = Package(
     targets: [
         // The pmset and sudoers logic, without UI, so it is tested on its own.
         .target(name: "ZyxKit"),
-        .executableTarget(name: "Zyx", dependencies: ["ZyxKit"]),
+        // stick's macOS desktop daemon, kept as close to stick's copy as
+        // possible, so it builds in the Swift 5 language mode as stick does.
+        .target(name: "Stickd", swiftSettings: [.swiftLanguageMode(.v5)]),
+        .executableTarget(name: "Zyx", dependencies: ["ZyxKit", "Stickd"]),
         .testTarget(name: "ZyxKitTests", dependencies: ["ZyxKit"]),
     ]
 )
