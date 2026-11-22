@@ -14,6 +14,6 @@ rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin/Zyx" "$app/Contents/MacOS/Zyx"
 sed -e "s/__VERSION__/$version/" -e "s/__BUILD__/$build/" Resources/Info.plist > "$app/Contents/Info.plist"
-cp Resources/AppIcon.icns Resources/MenuIcon.pdf "$app/Contents/Resources/"
+cp Resources/AppIcon.icns "$app/Contents/Resources/"
 plutil -lint "$app/Contents/Info.plist" >/dev/null
 echo "$app: $version ($build)"

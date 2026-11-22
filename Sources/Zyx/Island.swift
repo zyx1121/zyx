@@ -8,64 +8,85 @@ private enum Shape {
     static let grow = CGSize(width: 80, height: 12)
     /// How much it grows to show a notice: a row under the camera.
     static let noticeGrow = CGSize(width: 180, height: 50)
+    /// How much it grows to show the tools: their rows under the camera.
+    static let toolsGrow = CGSize(width: 180, height: 92)
+    static let row: CGFloat = 34
+    static let icon: CGFloat = 24
     /// Clawd's pixels are as tall as twice their width, like a terminal
     /// cell's quarter blocks.
     static let clawdPixel = CGSize(width: 1.5, height: 3)
     static let noticeClawdPixel = CGSize(width: 2, height: 4)
     static let clawdInset: CGFloat = 10
-    static let noticeInset: CGFloat = 18
+    static let inset: CGFloat = 18
     /// Room around the largest island for the spring to overshoot into.
     static let slack = CGSize(width: 24, height: 12)
     /// The flare where the island meets the top edge, like the notch itself.
     static let flare: CGFloat = 6
     static let corner: CGFloat = 10
     static let hoverCorner: CGFloat = 14
-    static let noticeCorner: CGFloat = 22
+    static let openCorner: CGFloat = 22
     /// How long a notice stays when the cursor is not on it.
     static let noticeTime: TimeInterval = 6
+    /// How long the island stays open after the cursor leaves it.
+    static let linger: TimeInterval = 1.2
 }
 
-/// A Dynamic Island around the notch: one borderless panel per notched
-/// screen, over the menu bar, on every Space and beside full screen apps. At
-/// rest it is a black shape the size of the notch, so it disappears into the
-/// camera housing; under the cursor it grows with a spring and a tap on the
-/// trackpad. A Claude Code session that finishes a turn opens it wider with
-/// a notice; a click on the notice brings that session's tmux tab forward.
+/// zyx itself: a Dynamic Island around the notch, with no menu bar item.
+/// One borderless panel per notched screen, over the menu bar, on every
+/// Space and beside full screen apps.
+///
+/// - At rest it is a black shape the size of the notch, so it disappears
+///   into the camera housing.
+/// - Under the cursor it grows with a spring and a tap on the trackpad, and
+///   Clawd looks out of the left wing.
+/// - A click opens it to the tools, one row each, and Quit.
+/// - A Claude Code session that finishes a turn opens it with a notice; a
+///   click on the notice brings that session's tmux tab forward.
 @MainActor
 final class Island {
+    private let dopamine: DopamineModel
     private var islands: [Screen] = []
     private var layout: [NSRect] = []
     private var observer: NSObjectProtocol?
     private var monitors: [Any] = []
     private var dismiss: DispatchWorkItem?
 
-    init() {
+    init(dopamine: DopamineModel) {
+        self.dopamine = dopamine
         build()
         observer = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.build() }
         }
-        // The panel ignores the mouse, so clicks reach the menu bar under its
-        // margins; the cursor is watched instead. Mouse moves need no
-        // Accessibility permission, unlike keys.
-        let events: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged]
-        let global = NSEvent.addGlobalMonitorForEvents(matching: events) { [weak self] _ in
+        // The panel ignores the mouse at rest, so clicks reach the menu bar
+        // under its margins; the cursor is watched instead. Mouse moves need
+        // no Accessibility permission, unlike keys.
+        let moves: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged]
+        let global = NSEvent.addGlobalMonitorForEvents(matching: moves) { [weak self] _ in
             MainActor.assumeIsolated { self?.track() }
         }
-        let local = NSEvent.addLocalMonitorForEvents(matching: events) { [weak self] event in
+        let local = NSEvent.addLocalMonitorForEvents(matching: moves) { [weak self] event in
             self?.track()
             return event
         }
-        monitors = [global, local].compactMap { $0 }
+        // A click in another app closes the tools, like a menu.
+        let outside = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            MainActor.assumeIsolated { self?.close() }
+        }
+        monitors = [global, local, outside].compactMap { $0 }
     }
 
     /// Shows a finished session, unless its tab is already on screen.
     func show(_ notice: Notice) {
         let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         guard notice.worthShowing(terminalInFront: front == Terminal.bundle) else { return }
-        for island in islands { island.show(notice) }
-        scheduleDismiss()
+        for island in islands {
+            island.state.tools = false
+            island.state.notice = notice
+            island.update()
+        }
+        schedule(after: Shape.noticeTime)
     }
 
     /// Rebuilds only when a notch moved: brightness changes post this
@@ -78,7 +99,9 @@ final class Island {
         guard notches != layout else { return }
         layout = notches
         islands.forEach { $0.panel.orderOut(nil) }
-        islands = notches.map { Screen(notch: $0, open: { [weak self] notice in self?.open(notice) }) }
+        islands = notches.map { notch in
+            Screen(notch: notch, dopamine: dopamine) { [weak self] in self?.tap() }
+        }
     }
 
     private func track() {
@@ -88,31 +111,52 @@ final class Island {
             let hovering = Notch.hovers(point, notch: island.notch, grown: island.shown,
                                         hovering: state.hovering)
             guard hovering != state.hovering else { continue }
-            if hovering {
+            if hovering, !state.open {
                 NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
             }
             state.hovering = hovering
-            // A notice stays while the cursor is on it, and leaves a moment
-            // after the cursor does.
-            if state.notice != nil {
-                hovering ? dismiss?.cancel() : scheduleDismiss(after: 1.5)
+            island.update()
+            // An open island stays while the cursor is on it, and closes a
+            // moment after the cursor leaves.
+            if state.open {
+                hovering ? dismiss?.cancel() : schedule(after: Shape.linger)
             }
         }
     }
 
-    private func scheduleDismiss(after delay: TimeInterval = Shape.noticeTime) {
+    /// A click on the island: a notice opens its session, anything else
+    /// opens or closes the tools.
+    private func tap() {
+        if let notice = islands.lazy.compactMap(\.state.notice).first {
+            close()
+            Terminal.focus(notice)
+            return
+        }
+        let opening = !(islands.first?.state.tools ?? false)
+        if opening { dopamine.refresh() }
+        dismiss?.cancel()
+        for island in islands {
+            island.state.tools = opening
+            island.update()
+        }
+    }
+
+    private func close() {
+        dismiss?.cancel()
+        for island in islands where island.state.open {
+            island.state.notice = nil
+            island.state.tools = false
+            island.update()
+        }
+    }
+
+    private func schedule(after delay: TimeInterval) {
         dismiss?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            MainActor.assumeIsolated { self?.islands.forEach { $0.show(nil) } }
+            MainActor.assumeIsolated { self?.close() }
         }
         dismiss = work
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
-    }
-
-    private func open(_ notice: Notice) {
-        dismiss?.cancel()
-        islands.forEach { $0.show(nil) }
-        Terminal.focus(notice)
     }
 }
 
@@ -143,6 +187,10 @@ private enum Terminal {
 private final class IslandState {
     var hovering = false
     var notice: Notice?
+    var tools = false
+
+    /// Open: showing a notice or the tools, not just grown under the cursor.
+    var open: Bool { notice != nil || tools }
 }
 
 /// The island on one screen: the notch, its grown shapes and the panel that
@@ -152,18 +200,22 @@ private struct Screen {
     let notch: NSRect
     let grown: NSRect
     let noticed: NSRect
+    let tooled: NSRect
     let state = IslandState()
     let panel: NSPanel
 
     /// The island as it is drawn now, for hover.
-    var shown: NSRect { state.notice == nil ? grown : noticed }
+    var shown: NSRect { state.tools ? tooled : state.notice != nil ? noticed : grown }
 
-    init(notch: NSRect, open: @escaping @MainActor (Notice) -> Void) {
+    init(notch: NSRect, dopamine: DopamineModel, tap: @escaping @MainActor () -> Void) {
         self.notch = notch
         grown = Notch.grown(notch, by: Shape.grow)
         noticed = Notch.grown(notch, by: Shape.noticeGrow)
-        let frame = Notch.grown(noticed, by: CGSize(width: Shape.slack.width + 2 * Shape.flare,
-                                                    height: Shape.slack.height))
+        tooled = Notch.grown(notch, by: Shape.toolsGrow)
+        let largest = CGSize(width: max(Shape.noticeGrow.width, Shape.toolsGrow.width),
+                             height: max(Shape.noticeGrow.height, Shape.toolsGrow.height))
+        let frame = Notch.grown(Notch.grown(notch, by: largest),
+                                by: CGSize(width: Shape.slack.width + 2 * Shape.flare, height: Shape.slack.height))
         panel = IslandPanel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel],
                             backing: .buffered, defer: false)
         // Above the status bar: at its level, macOS 27 draws its own notch
@@ -178,60 +230,81 @@ private struct Screen {
         panel.backgroundColor = .clear
         panel.hasShadow = false
         panel.ignoresMouseEvents = true
-        let host = ClickHost(rootView: IslandView(state: state, notch: notch.size, open: open))
+        let host = ClickHost(rootView: IslandView(state: state, notch: notch.size, dopamine: dopamine, tap: tap))
         // The panel keeps one size; the content animates inside it.
         host.sizingOptions = []
         panel.contentView = host
         panel.orderFrontRegardless()
     }
 
-    /// Shows a notice, or the plain island for nil. The panel takes clicks
-    /// only while a notice is up, so the menu bar under it stays usable.
-    func show(_ notice: Notice?) {
-        state.notice = notice
-        panel.ignoresMouseEvents = notice == nil
+    /// The panel takes clicks only while the island is under the cursor or
+    /// open, so the menu bar beside the notch stays usable.
+    func update() {
+        panel.ignoresMouseEvents = !(state.hovering || state.open)
     }
 }
 
-/// Takes the first click even though the panel never activates the app.
+/// Takes the first click even though the panel never activates the app, and
+/// tracks the cursor while the app is inactive, which it always is, so the
+/// rows' hover works.
 private final class ClickHost<Content: View>: NSHostingView<Content> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if !trackingAreas.contains(where: { $0.owner === self && $0.options.contains(.activeAlways) }) {
+            addTrackingArea(NSTrackingArea(rect: .zero, options: [.activeAlways, .inVisibleRect,
+                                                                   .mouseEnteredAndExited, .mouseMoved],
+                                           owner: self))
+        }
+    }
 }
 
 private struct IslandView: View {
     let state: IslandState
     let notch: CGSize
-    let open: @MainActor (Notice) -> Void
+    let dopamine: DopamineModel
+    let tap: @MainActor () -> Void
 
     var body: some View {
         let hovering = state.hovering
         let notice = state.notice
-        let grow = notice != nil ? Shape.noticeGrow : hovering ? Shape.grow : .zero
-        let corner = notice != nil ? Shape.noticeCorner : hovering ? Shape.hoverCorner : Shape.corner
+        let tools = state.tools
+        let grow = tools ? Shape.toolsGrow : notice != nil ? Shape.noticeGrow : hovering ? Shape.grow : .zero
+        let corner = state.open ? Shape.openCorner : hovering ? Shape.hoverCorner : Shape.corner
+        let peek = hovering && !state.open
         IslandShape(flare: Shape.flare, corner: corner)
             .fill(.black)
             .frame(width: notch.width + grow.width + 2 * Shape.flare, height: notch.height + grow.height)
+            .contentShape(Rectangle())
+            .onTapGesture(perform: tap)
             .overlay(alignment: .leading) {
                 // Clawd in the left wing, beside the camera.
                 ClawdView(pixel: Shape.clawdPixel)
                     .padding(.leading, Shape.flare + Shape.clawdInset)
-                    .opacity(hovering && notice == nil ? 1 : 0)
-                    .scaleEffect(hovering && notice == nil ? 1 : 0.6, anchor: .leading)
+                    .frame(height: notch.height + (peek ? Shape.grow.height : 0), alignment: .center)
+                    .frame(maxHeight: .infinity, alignment: .top)
+                    .opacity(peek ? 1 : 0)
+                    .scaleEffect(peek ? 1 : 0.6, anchor: .leading)
+                    .allowsHitTesting(false)
             }
-            .overlay(alignment: .bottomLeading) {
-                if let notice {
-                    NoticeRow(notice: notice)
-                        .padding(.leading, Shape.flare + Shape.noticeInset)
-                        .padding(.trailing, Shape.flare + Shape.noticeInset)
-                        .padding(.bottom, 12)
-                        .transition(.opacity.combined(with: .scale(scale: 0.8, anchor: .top)))
+            .overlay(alignment: .bottom) {
+                Group {
+                    if let notice {
+                        NoticeRow(notice: notice)
+                            .allowsHitTesting(false)
+                    } else if tools {
+                        ToolRows(dopamine: dopamine)
+                    }
                 }
+                .padding(.horizontal, Shape.flare + Shape.inset - 8)
+                .padding(.bottom, 10)
+                .transition(.opacity.combined(with: .scale(scale: 0.85, anchor: .top)))
             }
-            .contentShape(Rectangle())
-            .onTapGesture { if let notice { open(notice) } }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .animation(.spring(response: 0.38, dampingFraction: 0.68), value: hovering)
             .animation(.spring(response: 0.45, dampingFraction: 0.72), value: notice)
+            .animation(.spring(response: 0.45, dampingFraction: 0.72), value: tools)
     }
 }
 
@@ -253,6 +326,64 @@ private struct NoticeRow: View {
             .lineLimit(1)
             Spacer(minLength: 0)
         }
+        .padding(.horizontal, 8)
+    }
+}
+
+/// The tools, one row each, then Quit.
+private struct ToolRows: View {
+    let dopamine: DopamineModel
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ToolRow(title: "Dopamine", symbol: "bolt.fill", on: dopamine.on == true, detail: dopamine.error) {
+                if let current = dopamine.on, !dopamine.busy { dopamine.set(!current) }
+            }
+            ToolRow(title: "Quit zyx", symbol: "power", on: nil, detail: nil) {
+                NSApp.terminate(nil)
+            }
+        }
+    }
+}
+
+/// A whole row is the switch, as in the system menus: the icon circle turns
+/// blue when the tool is on. `on` is nil for an action, not a switch.
+private struct ToolRow: View {
+    let title: String
+    let symbol: String
+    let on: Bool?
+    let detail: String?
+    let action: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: symbol)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: Shape.icon, height: Shape.icon)
+                    .background(on == true ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.white.opacity(0.14)),
+                                in: .circle)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title).font(.system(size: 13)).foregroundStyle(.white)
+                    if let detail {
+                        Text(detail).font(.system(size: 10)).foregroundStyle(.white.opacity(0.6))
+                    }
+                }
+                .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 8)
+            .frame(height: Shape.row)
+            .background(hover ? AnyShapeStyle(.white.opacity(0.1)) : AnyShapeStyle(.clear),
+                        in: .rect(cornerRadius: 10, style: .continuous))
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
+        .accessibilityLabel(title)
+        .accessibilityValue(on.map { $0 ? "on" : "off" } ?? "")
     }
 }
 
