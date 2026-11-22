@@ -15,6 +15,7 @@ zyx 把刘海变成灵动岛。指向刘海它会变大，点一下打开工具�
 - **开机自动启动**：第一次打开时，zyx 会把自己加进登录项。要关掉，到「系统设置」、「通用」、「登录项」移除。
 - **Claude Code 通知**：tmux 里的 Claude Code 会话完成一轮时，灵动岛会显示它的名字和回复的第 1 行。点通知会跳到那个 tmux 标签页。把 `scripts/claude-stop-hook.sh` 设为 `~/.claude/settings.json` 的 `Stop` hook。
 - **Dopamine**：合盖时让 Mac 保持唤醒。开关会执行 `pmset -a disablesleep 1`，并显示当前的系统设置。
+- **Stick**：内置 [stick](https://github.com/zyx1121/stick) 的桌面 daemon，让 agent 看得到、操作得了这台 Mac。agent 动作时灵动岛会探出来。开关或 Ctrl+Option+F12 可暂停。
 
 ## 快速开始
 

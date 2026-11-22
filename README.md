@@ -18,6 +18,7 @@ zyx turns the notch into a Dynamic Island. Point at the notch and it grows; clic
 - **Open at login**: zyx adds itself to Login Items on first launch. Remove it in System Settings, General, Login Items.
 - **Claude Code notices**: when a Claude Code session in tmux finishes a turn, the island shows its name and the first line of the reply. Click the notice to jump to that tmux tab. Install `scripts/claude-stop-hook.sh` as a `Stop` hook in `~/.claude/settings.json`.
 - **Dopamine**: keeps the Mac awake with the lid closed. The switch runs `pmset -a disablesleep 1` and shows the current system setting.
+- **Stick**: hosts the desktop daemon of [stick](https://github.com/zyx1121/stick), so agents can see and drive this Mac. The island peeks while an agent acts. The switch, or Ctrl+Option+F12, pauses it.
 
 ## Quick start
 

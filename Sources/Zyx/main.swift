@@ -1,5 +1,6 @@
 import AppKit
 import ServiceManagement
+import Stickd
 import SwiftUI
 import ZyxKit
 
@@ -8,7 +9,8 @@ import ZyxKit
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let dopamine = DopamineModel()
-    private var island: Island?
+    private let stick = StickModel()
+    private(set) var island: Island?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Open at login, once: turning it off in System Settings sticks.
@@ -17,7 +19,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try? SMAppService.mainApp.register()
             UserDefaults.standard.set(true, forKey: offered)
         }
-        island = Island(dopamine: dopamine)
+        island = Island(dopamine: dopamine, stick: stick)
+        // stick's desktop daemon: agents drive this Mac through it, and the
+        // island peeks while they do.
+        stickdObserve { _ in
+            MainActor.assumeIsolated { (NSApp.delegate as? AppDelegate)?.island?.agentActed() }
+        }
+        startStickd()
     }
 
     /// `zyx://done?…` from the Claude Code Stop hook.
@@ -25,6 +33,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for url in urls {
             if let notice = Notice(url: url) { island?.show(notice) }
         }
+    }
+}
+
+/// The Stick row: on while agents may drive this Mac, off when paused (the
+/// same switch as Ctrl+Option+F12).
+@MainActor
+@Observable
+final class StickModel {
+    var on = true
+
+    func refresh() {
+        on = !stickdIsPaused()
+    }
+
+    func set(_ value: Bool) {
+        stickdSetPaused(!value)
+        refresh()
     }
 }
 
