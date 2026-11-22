@@ -5,7 +5,11 @@ import ZyxKit
 /// Sizes of the island, in points.
 private enum Shape {
     /// How much the island grows past the notch on hover.
-    static let grow = CGSize(width: 40, height: 12)
+    static let grow = CGSize(width: 80, height: 12)
+    /// Clawd's pixels are as tall as twice their width, like a terminal
+    /// cell's quarter blocks.
+    static let clawdPixel = CGSize(width: 1.5, height: 3)
+    static let clawdInset: CGFloat = 10
     /// Room around the grown island for the spring to overshoot into.
     static let slack = CGSize(width: 24, height: 12)
     /// The flare where the island meets the top edge, like the notch itself.
@@ -127,6 +131,13 @@ private struct IslandView: View {
         IslandShape(flare: Shape.flare, corner: hovering ? Shape.hoverCorner : Shape.corner)
             .fill(.black)
             .frame(width: width, height: height)
+            .overlay(alignment: .leading) {
+                // Clawd in the left wing, beside the camera.
+                ClawdView(pixel: Shape.clawdPixel)
+                    .padding(.leading, Shape.flare + Shape.clawdInset)
+                    .opacity(hovering ? 1 : 0)
+                    .scaleEffect(hovering ? 1 : 0.6, anchor: .leading)
+            }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .animation(.spring(response: 0.38, dampingFraction: 0.68), value: hovering)
     }
@@ -167,5 +178,29 @@ private struct IslandShape: SwiftUI.Shape {
 private final class IslandPanel: NSPanel {
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
         frameRect
+    }
+}
+
+/// Clawd drawn from its block characters: one path of pixels in the Claude
+/// Code orange.
+private struct ClawdView: View {
+    let pixel: CGSize
+    private static let grid = Clawd.pixels()
+    private static let color = Color(red: Double(Clawd.rgb.red) / 255,
+                                     green: Double(Clawd.rgb.green) / 255,
+                                     blue: Double(Clawd.rgb.blue) / 255)
+
+    var body: some View {
+        let grid = Self.grid
+        Path { path in
+            for (y, row) in grid.enumerated() {
+                for (x, on) in row.enumerated() where on {
+                    path.addRect(CGRect(x: CGFloat(x) * pixel.width, y: CGFloat(y) * pixel.height,
+                                        width: pixel.width, height: pixel.height))
+                }
+            }
+        }
+        .fill(Self.color)
+        .frame(width: CGFloat(grid[0].count) * pixel.width, height: CGFloat(grid.count) * pixel.height)
     }
 }
