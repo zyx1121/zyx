@@ -26,8 +26,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let pond = PondModel()
     private lazy var panel = MenuPanel(content: MenuView(dopamine: dopamine, pond: pond, quit: { NSApp.terminate(nil) }))
     private var monitors: [Any] = []
+    private var island: Island?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        island = Island()
         // Open at login, once: turning it off in System Settings sticks.
         let offered = "launchAtLoginOffered"
         if !UserDefaults.standard.bool(forKey: offered), Bundle.main.bundleURL.pathExtension == "app" {
