@@ -53,6 +53,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// `zyx://done?…` from the Claude Code Stop hook.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            if let notice = Notice(url: url) { island?.show(notice) }
+        }
+    }
+
     @objc private func toggle() {
         panel.isVisible ? close() : open()
     }
