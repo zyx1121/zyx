@@ -21,6 +21,8 @@ private enum Shape {
         CGSize(width: 180, height: CGFloat(min(count, maxAgents)) * row + 24)
     }
     static let inset: CGFloat = 18
+    /// The space under the last row.
+    static let rowsBottom: CGFloat = 10
     /// Room around the largest island for the spring to overshoot into.
     static let slack = CGSize(width: 24, height: 12)
     /// The flare where the island meets the top edge, like the notch itself.
@@ -134,6 +136,8 @@ final class Island {
             let state = island.state
             let hovering = Notch.hovers(point, notch: island.notch, grown: island.shown,
                                         hovering: state.hovering)
+            let pointed = hovering ? island.agent(at: point)?.id : nil
+            if pointed != state.pointed { state.pointed = pointed }
             guard hovering != state.hovering else { continue }
             if hovering, !state.open {
                 refreshAgents()
@@ -261,6 +265,10 @@ private final class IslandState {
     /// The running Claude Code sessions, read when the cursor arrives.
     var agents: [Agent] = []
 
+    /// The agent row under the cursor. The island tracks the cursor itself:
+    /// SwiftUI's hover in a panel of an inactive app lags a row behind.
+    var pointed: String?
+
     /// Listing the agents: under the cursor, not open, and some are running.
     var roster: Bool { hovering && !open && !agents.isEmpty }
 
@@ -315,6 +323,18 @@ private struct Screen {
         host.sizingOptions = []
         panel.contentView = host
         panel.orderFrontRegardless()
+    }
+
+    /// The agent whose row is under `point`, in screen coordinates. The rows
+    /// sit at the bottom of the island, `Shape.row` tall each.
+    func agent(at point: NSPoint) -> Agent? {
+        guard state.roster else { return nil }
+        let agents = Array(state.agents.prefix(Shape.maxAgents))
+        let island = Notch.grown(notch, by: Shape.rosterGrow(agents.count))
+        let bottom = island.minY + Shape.rowsBottom
+        guard island.insetBy(dx: Shape.flare, dy: 0).contains(point), point.y >= bottom else { return nil }
+        let fromBottom = Int((point.y - bottom) / Shape.row)
+        return fromBottom < agents.count ? agents[agents.count - 1 - fromBottom] : nil
     }
 
     /// The panel takes clicks only while the island is under the cursor or
@@ -380,11 +400,11 @@ private struct IslandView: View {
                     } else if tools {
                         ToolRows(dopamine: dopamine, stick: stick)
                     } else if roster {
-                        AgentRows(agents: state.agents, open: open)
+                        AgentRows(agents: state.agents, pointed: state.pointed, open: open)
                     }
                 }
                 .padding(.horizontal, Shape.flare + Shape.inset - 8)
-                .padding(.bottom, 10)
+                .padding(.bottom, Shape.rowsBottom)
                 .transition(.opacity.combined(with: .scale(scale: 0.85, anchor: .top)))
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -423,12 +443,13 @@ private struct NoticeRow: View {
 /// The running sessions, one row each: Bean, the tab title and the status.
 private struct AgentRows: View {
     let agents: [Agent]
+    let pointed: String?
     let open: @MainActor (Agent) -> Void
 
     var body: some View {
         VStack(spacing: 0) {
             ForEach(agents.prefix(Shape.maxAgents)) { agent in
-                AgentRow(agent: agent) { open(agent) }
+                AgentRow(agent: agent, hover: agent.id == pointed) { open(agent) }
             }
         }
     }
@@ -436,8 +457,8 @@ private struct AgentRows: View {
 
 private struct AgentRow: View {
     let agent: Agent
+    let hover: Bool
     let action: () -> Void
-    @State private var hover = false
 
     var body: some View {
         Button(action: action) {
@@ -457,7 +478,6 @@ private struct AgentRow: View {
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
-        .onHover { hover = $0 }
         .accessibilityLabel(agent.name)
         .accessibilityValue(agent.status.label)
     }
