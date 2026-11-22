@@ -26,8 +26,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let pond = PondModel()
     private lazy var panel = MenuPanel(content: MenuView(dopamine: dopamine, pond: pond, quit: { NSApp.terminate(nil) }))
     private var monitors: [Any] = []
+    private var island: Island?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        island = Island()
         // Open at login, once: turning it off in System Settings sticks.
         let offered = "launchAtLoginOffered"
         if !UserDefaults.standard.bool(forKey: offered), Bundle.main.bundleURL.pathExtension == "app" {
@@ -48,6 +50,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if ProcessInfo.processInfo.environment["ZYX_OPEN_MENU"] == "1" {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.open() }
+        }
+    }
+
+    /// `zyx://done?…` from the Claude Code Stop hook.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            if let notice = Notice(url: url) { island?.show(notice) }
         }
     }
 
